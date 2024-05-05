@@ -1,10 +1,10 @@
 #include <iostream>
-#include <vector>
 #include <curand_kernel.h>
 #include <cuda_runtime.h>
+#include <stack>
 
 const int N = 512; // Grid size
-const float p = 0.5f; // Percolation probability
+const float p = 0.9f; // Percolation probability
 
 // CUDA error checking macro
 #define CUDA_CALL(x) do { if((x) != cudaSuccess) { \
@@ -30,33 +30,55 @@ __global__ void generate_grid(int *grid, curandState *states, float p) {
     }
 }
 
-// CUDA kernel to flood-fill from the top row
-__global__ void flood_fill(int *grid, int *result) {
-    int x = threadIdx.x + blockIdx.x * blockDim.x;
-    int y = threadIdx.y + blockIdx.y * blockDim.y;
-    if (x < 0 || x >= N || y < 0 || y >= N) return;
+// CUDA kernel to initialize the flood-fill result grid
+__global__ void initialize_result(int *result) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx < N * N) {
+        result[idx] = 0;
+    }
+}
 
-    int idx = x + y * N;
-    if (grid[idx] == 0) return;
+// Host function to implement iterative flood-fill
+void flood_fill(int *grid, int *result) {
+    std::stack<int> stack;
+    for (int x = 0; x < N; ++x) {
+        if (grid[x] == 1) {
+            stack.push(x);
+            result[x] = 1;
+        }
+    }
 
-    // Mark the current cell as visited
-    result[idx] = 1;
-
-    // Check neighboring cells
     int neighbors[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-    for (int i = 0; i < 4; ++i) {
-        int nx = x + neighbors[i][0];
-        int ny = y + neighbors[i][1];
-        if (nx >= 0 && nx < N && ny >= 0 && ny < N) {
-            int neighbor_idx = nx + ny * N;
-            if (grid[neighbor_idx] == 1 && result[neighbor_idx] == 0) {
-                result[neighbor_idx] = 1;
-                flood_fill<<<1, 1>>>(grid, result);
+    while (!stack.empty()) {
+        int idx = stack.top();
+        stack.pop();
+
+        int x = idx % N;
+        int y = idx / N;
+
+        for (int i = 0; i < 4; ++i) {
+            int nx = x + neighbors[i][0];
+            int ny = y + neighbors[i][1];
+            if (nx >= 0 && nx < N && ny >= 0 && ny < N) {
+                int neighbor_idx = nx + ny * N;
+                if (grid[neighbor_idx] == 1 && result[neighbor_idx] == 0) {
+                    stack.push(neighbor_idx);
+                    result[neighbor_idx] = 1;
+                }
             }
         }
     }
 }
 
+// CUDA kernel to copy data to the host flood-fill grid
+__global__ void copy_result(int *result, int *d_result) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx < N * N) {
+        result[idx] = d_result[idx];
+    }
+}
+
+// CUDA kernel to check for percolation from the top row to the bottom row
 __global__ void check_percolation(int *result, bool *percolated) {
     for (int x = 0; x < N; ++x) {
         if (result[x + (N - 1) * N] == 1) {
@@ -88,15 +110,12 @@ int main() {
     generate_grid<<<blocks_per_grid, threads_per_block>>>(d_grid, d_states, p);
     CUDA_CALL(cudaMemcpy(grid, d_grid, N * N * sizeof(int), cudaMemcpyDeviceToHost));
 
-    // Initialize result grid to zero
-    CUDA_CALL(cudaMemset(d_result, 0, N * N * sizeof(int)));
+    // Initialize the result grid to zero
+    initialize_result<<<blocks_per_grid, threads_per_block>>>(d_result);
 
-    // Start flood-fill from the top row
-    for (int x = 0; x < N; ++x) {
-        if (grid[x] == 1) {
-            flood_fill<<<1, 1>>>(d_grid, d_result);
-        }
-    }
+    // Perform flood-fill on the host
+    flood_fill(grid, result);
+    CUDA_CALL(cudaMemcpy(d_result, result, N * N * sizeof(int), cudaMemcpyHostToDevice));
 
     // Check for percolation
     CUDA_CALL(cudaMemset(d_percolated, 0, sizeof(bool)));
@@ -115,3 +134,4 @@ int main() {
 
     return 0;
 }
+
