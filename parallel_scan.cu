@@ -18,7 +18,7 @@ __global__ void downsweep(int *data, int n, int stride) {
     int index = (idx + 1) * stride * 2 - 1;
     if (index < n) {
         int temp = data[index - stride];
-        data[index - stride] = data[index];
+        data[index - stride] = temp;
         data[index] += temp;
     }
 }
